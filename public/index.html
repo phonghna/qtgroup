@@ -354,6 +354,8 @@
   .login-card .lc-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;}
   .login-card h2{font-size:19px;}
   .login-card p.hint{color:var(--text-muted);font-size:13px;margin:4px 0 20px;}
+  .login-form{display:flex;flex-direction:column;gap:16px;max-width:340px;}
+  .login-submit{width:100%;justify-content:center;margin-top:4px;}
   .staff-list{
     display:grid;grid-template-columns:repeat(2,1fr);gap:10px;
     max-height:420px;overflow-y:auto;padding-right:2px;
@@ -587,8 +589,19 @@
       </div>
       <h2>QT Group</h2>
     </div>
-    <p class="hint">Demo sign-in — pick your account to load the role-scoped view. (Prototype only: no password. A production rollout needs real authentication.)</p>
-    <div class="staff-list" id="staffList"></div>
+    <p class="hint">Sign in with your QT Group account.</p>
+    <form id="loginForm" class="login-form" autocomplete="on">
+      <div class="field">
+        <label for="li_username">Username</label>
+        <input id="li_username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" autocorrect="off">
+      </div>
+      <div class="field">
+        <label for="li_password">Password</label>
+        <input id="li_password" type="password" autocomplete="current-password">
+      </div>
+      <div class="banner critical" id="loginError" hidden><span class="bmsg" id="loginErrorMsg"></span></div>
+      <button type="submit" class="btn btn-primary login-submit" id="btnLoginSubmit">Sign in</button>
+    </form>
   </div>
 </div>
 
@@ -911,13 +924,13 @@
   // any created via the Users & Roles tab) are kept in state.staff, synced
   // through the `staff` db collection when available.
   var STAFF_SEED = [
-    {id:"qt",        name:"QT",        role:"Admin",   markets:"ALL",          active:true},
-    {id:"sherence",  name:"Sherence",  role:"Manager",  markets:["VN","PH"],   active:true},
-    {id:"ciara",     name:"Ciara",     role:"Manager",  markets:["TL","IN"],   active:true},
-    {id:"ivy",       name:"Ivy",       role:"CS",       markets:["VN"],        active:true},
-    {id:"rhea",      name:"Rhea",      role:"CS",       markets:["PH"],        active:true},
-    {id:"eloisa",    name:"Eloisa",    role:"CS",       markets:["TL","IN"],   active:true},
-    {id:"shane",     name:"Shane",     role:"Packing",  markets:"ALL",         active:true}
+    {id:"qt",        username:"qtgroup",   name:"QT",        role:"Admin",   markets:"ALL",          active:true},
+    {id:"sherence",  username:"sherence",  name:"Sherence",  role:"Manager",  markets:["VN","PH"],   active:true},
+    {id:"ciara",     username:"ciara",     name:"Ciara",     role:"Manager",  markets:["TL","IN"],   active:true},
+    {id:"ivy",       username:"ivy",       name:"Ivy",       role:"CS",       markets:["VN"],        active:true},
+    {id:"rhea",      username:"rhea",      name:"Rhea",      role:"CS",       markets:["PH"],        active:true},
+    {id:"eloisa",    username:"eloisa",    name:"Eloisa",    role:"CS",       markets:["TL","IN"],   active:true},
+    {id:"shane",     username:"shane",     name:"Shane",     role:"Packing",  markets:"ALL",         active:true}
   ];
   function seedStaffFallback(){
     return STAFF_SEED.map(function(u){ return Object.assign({}, u); });
@@ -1180,81 +1193,73 @@
       messagesCol = db.collection("messages");
       staffCol = db.collection("staff");
 
-      staffCol.onSnapshot(function(snap){
+      dbUnsubscribers.push(staffCol.onSnapshot(function(snap){
+        // Seeding (both the staff profiles and their real login credentials)
+        // now happens server-side, before this app is ever reachable — see
+        // lib/seed.js's ensureStaffSeeded(), called from /api/auth/login and
+        // /api/auth/me. So by the time this subscription is running (i.e.
+        // after a successful sign-in), the staff collection is never
+        // expected to still be empty.
         var list = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; });
-        if(!list.length && !state._staffSeeded){
-          // Brand-new/empty collection: kick off seeding, but don't act on an
-          // empty snapshot yet — a returning user auto-signed-in from local
-          // storage would otherwise look "removed" before the seed writes land.
-          state._staffSeeded = true;
-          state._staffSeeding = true;
-          seedStaffFallback().forEach(function(u){
-            var sid = u.id, copy = Object.assign({}, u); delete copy.id;
-            staffCol.doc(sid).set(copy).catch(function(){});
-          });
-          return;
-        }
         state.staff = list;
-        if(state._staffSeeding && list.length >= STAFF_SEED.length){
-          state._staffSeeding = false;
-        }
         if(state.user){
           var mine = state.staff.find(function(x){ return x.id===state.user.id; });
+          // state._staffSeeding guards the brief window during "Reset demo
+          // data" where the staff collection is wiped then rewritten one
+          // doc at a time — without it, the Admin running the reset could
+          // see their own account "vanish" mid-reset and get bounced back
+          // to the login screen.
           if(!mine && !state._staffSeeding){
             toast("Your account was removed by an admin");
             signOut();
             return;
           }
-          if(mine){
-            var changed = JSON.stringify(mine)!==JSON.stringify(state.user);
-            state.user = mine;
-            if(changed) toast("Your account permissions were updated");
-            renderUserChip();
-          }
-        } else {
-          renderStaffList();
+          if(!mine) return;
+          var changed = JSON.stringify(mine)!==JSON.stringify(state.user);
+          state.user = mine;
+          if(changed) toast("Your account permissions were updated");
+          renderUserChip();
         }
         renderAll();
       }, function(err){
         console.warn("staff snapshot error", err);
-        if(!state.staff.length){ state.staff = seedStaffFallback(); renderAll(); }
-      });
+      }));
 
-      ordersCol.orderBy("order_date","desc").limit(500).onSnapshot(function(snap){
+      dbUnsubscribers.push(ordersCol.orderBy("order_date","desc").limit(500).onSnapshot(function(snap){
         state.orders = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; });
         state.dbReady = true;
         renderAll();
       }, function(err){
         console.warn("orders snapshot error", err);
         if(!state.orders.length){ state.orders = seedOrdersFallback(); renderAll(); }
-      });
-      inventoryCol.onSnapshot(function(snap){
+      }));
+      dbUnsubscribers.push(inventoryCol.onSnapshot(function(snap){
         state.inventory = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; });
         renderAll();
       }, function(err){
         console.warn("inventory snapshot error", err);
         if(!state.inventory.length){ state.inventory = seedInventoryFallback(); renderAll(); }
-      });
-      logsCol.orderBy("at","desc").limit(200).onSnapshot(function(snap){
+      }));
+      dbUnsubscribers.push(logsCol.orderBy("at","desc").limit(200).onSnapshot(function(snap){
         state.logs = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; });
         renderAll();
-      }, function(err){ console.warn("logs snapshot error", err); });
-      announcementsCol.onSnapshot(function(snap){
+      }, function(err){ console.warn("logs snapshot error", err); }));
+      dbUnsubscribers.push(announcementsCol.onSnapshot(function(snap){
         state.announcements = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; });
         if(!state.announcements.length && !state._annSeeded){ state._annSeeded=true; seedAnnouncementsFallback().forEach(function(a){ announcementsCol.doc(a.id).set(a).catch(function(){}); }); }
         renderAll();
       }, function(err){
         console.warn("announcements snapshot error", err);
         if(!state.announcements.length){ state.announcements = seedAnnouncementsFallback(); renderAll(); }
-      });
-      messagesCol.orderBy("created_at","desc").limit(300).onSnapshot(function(snap){
+      }));
+      dbUnsubscribers.push(messagesCol.orderBy("created_at","desc").limit(300).onSnapshot(function(snap){
         state.messages = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; });
         if(!state.messages.length && !state._msgSeeded){ state._msgSeeded=true; seedMessagesFallback().forEach(function(m){ messagesCol.doc(m.id).set(m).catch(function(){}); }); }
         renderAll();
       }, function(err){
         console.warn("messages snapshot error", err);
         if(!state.messages.length){ state.messages = seedMessagesFallback(); renderAll(); }
-      });
+      }));
     } else {
       state.staff = seedStaffFallback();
       state.orders = seedOrdersFallback();
@@ -1299,6 +1304,9 @@
           var sid = su.id; delete su.id;
           await staffCol.doc(sid).set(su);
         }
+        state._staffSeeding = false; // reseed done — resume normal "account removed" detection
+                                      // (login credentials in the separate `credentials`
+                                      // collection are untouched by this reset)
         var freshOrders = seedOrdersFallback();
         for(var i=0;i<freshOrders.length;i++){
           var o = freshOrders[i];
@@ -1378,49 +1386,92 @@
   }
 
   /* ============================================================
-     LOGIN GATE
+     LOGIN GATE — real username/password auth against /api/auth/*
+     (server-side session cookie; see lib/auth.js + lib/seed.js on the
+     standalone website deployment). This replaces the earlier "pick your
+     account from a list, no password" prototype gate.
   ============================================================ */
-  var LOGIN_KEY = "qt_order_desk_user_id";
+  var dbUnsubscribers = [];
 
-  function renderStaffList(){
-    var el = document.getElementById("staffList");
-    el.innerHTML = state.staff.map(function(u){
-      var r = ROLES[u.role];
-      var scope = u.markets==="ALL" ? "All markets" : u.markets.map(function(k){ return MARKET_BY_KEY[k].name; }).join(" · ");
-      var caps = (ROLE_INFO[u.role] && ROLE_INFO[u.role].caps) || [];
-      var capsHtml = caps.map(function(c){ return '<span class="cap-tag">'+escapeHtml(c)+'</span>'; }).join("");
-      return '<button type="button" class="staff-row" data-id="'+u.id+'">'+
-        '<div class="sr-top">'+
-          '<div class="avatar">'+initials(u.name)+'</div>'+
-          '<div class="who"><div class="nm">'+escapeHtml(u.name)+'</div><div class="scope">'+escapeHtml(scope)+'</div></div>'+
-          '<span class="role-badge" style="background:var(--'+r.color+'-bg);color:var(--'+r.color+');border-color:var(--'+r.color+'-border)">'+r.label+'</span>'+
-        '</div>'+
-        '<div class="sr-caps">'+capsHtml+'</div>'+
-      '</button>';
-    }).join("");
-    el.querySelectorAll(".staff-row").forEach(function(btn){
-      btn.addEventListener("click", function(){ signIn(btn.getAttribute("data-id")); });
-    });
+  function showLoginForm(){
+    var errEl = document.getElementById("loginError");
+    if(errEl) errEl.hidden = true;
+    var uEl = document.getElementById("li_username"), pEl = document.getElementById("li_password");
+    if(uEl) uEl.value = "";
+    if(pEl) pEl.value = "";
+    document.getElementById("loginGate").hidden = false;
+    document.getElementById("app").hidden = true;
+    setTimeout(function(){ if(uEl) uEl.focus(); }, 30);
   }
 
-  function signIn(id){
-    var u = state.staff.find(function(x){ return x.id===id; });
-    if(!u) return;
-    state.user = u;
-    try{ localStorage.setItem(LOGIN_KEY, id); }catch(e){}
-    var scope = staffMarkets(u);
+  function applySession(user){
+    state.user = user;
     state.marketFilter = "ALL";
     document.getElementById("loginGate").hidden = true;
     document.getElementById("app").hidden = false;
     renderUserChip();
+    initDb();
     renderAll();
   }
 
-  function signOut(){
+  async function checkSession(){
+    try{
+      var res = await fetch("/api/auth/me");
+      if(res.ok){
+        var json = await res.json();
+        applySession(json.user);
+        return;
+      }
+    }catch(e){ /* fall through to login form */ }
+    showLoginForm();
+  }
+
+  function wireLoginForm(){
+    var form = document.getElementById("loginForm");
+    if(!form) return;
+    form.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var btn = document.getElementById("btnLoginSubmit");
+      var errEl = document.getElementById("loginError");
+      var errMsgEl = document.getElementById("loginErrorMsg");
+      var username = document.getElementById("li_username").value.trim();
+      var password = document.getElementById("li_password").value;
+      errEl.hidden = true;
+      if(!username || !password){
+        errMsgEl.textContent = "Please enter both username and password";
+        errEl.hidden = false;
+        return;
+      }
+      btn.disabled = true; btn.textContent = "Signing in…";
+      try{
+        var res = await fetch("/api/auth/login", {
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({username:username, password:password})
+        });
+        var json = await res.json().catch(function(){ return {}; });
+        if(!res.ok){
+          errMsgEl.textContent = json.error || "Sign-in failed — please try again";
+          errEl.hidden = false;
+          return;
+        }
+        applySession(json.user);
+      }catch(e){
+        errMsgEl.textContent = "Network error — please try again";
+        errEl.hidden = false;
+      }finally{
+        btn.disabled = false; btn.textContent = "Sign in";
+      }
+    });
+  }
+
+  async function signOut(){
+    dbUnsubscribers.forEach(function(u){ try{ u(); }catch(e){} });
+    dbUnsubscribers = [];
+    db = null;
     state.user = null;
-    try{ localStorage.removeItem(LOGIN_KEY); }catch(e){}
-    document.getElementById("app").hidden = true;
-    document.getElementById("loginGate").hidden = false;
+    showLoginForm();
+    try{ await fetch("/api/auth/logout", {method:"POST"}); }catch(e){}
   }
 
   function renderUserChip(){
@@ -1437,16 +1488,6 @@
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16 17l5-5-5-5M21 12H9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>'+
       '</button>';
     document.getElementById("btnSignOut").addEventListener("click", signOut);
-  }
-
-  function tryAutoSignIn(){
-    var id = null;
-    try{ id = localStorage.getItem(LOGIN_KEY); }catch(e){}
-    if(id && state.staff.some(function(u){ return u.id===id; })){
-      signIn(id);
-    } else {
-      renderStaffList();
-    }
   }
   /* ============================================================
      TAB SWITCHING
@@ -3555,7 +3596,7 @@
         '<button type="button" class="btn btn-primary btn-sm" id="btnAddUser">+ Add user</button>'+
       '</div>'+
       '<div class="panel">'+
-        '<div class="panel-head"><h3>Staff accounts</h3><span class="sub">'+state.staff.length+' account(s) · this is exactly the list shown on the sign-in screen</span></div>'+
+        '<div class="panel-head"><h3>Staff accounts</h3><span class="sub">'+state.staff.length+' account(s)</span></div>'+
         '<div class="table-scroll"><table><thead><tr><th>Name</th><th>Role</th><th>Market scope</th><th>Key permissions</th><th></th></tr></thead>'+
         '<tbody>'+(rowsHtml||'')+'</tbody></table></div>'+
       '</div>';
@@ -3597,6 +3638,16 @@
       return '<label class="us-market-check"><input type="checkbox" class="us-market-cb" value="'+m.key+'"'+(checked?' checked':'')+'> '+m.name+'</label>';
     }).join("");
 
+    var loginFieldsHtml = u
+      ? ('<div class="fieldset"><div class="fs-title">Login</div>'+
+          '<div class="field"><label>Username</label><input type="text" value="'+escapeHtml(u.username||"—")+'" disabled></div>'+
+          '<div class="field"><label>New password <span style="font-weight:400;color:var(--text-faint)">(leave blank to keep current)</span></label><input id="u_password" type="password" placeholder="Leave blank to keep current" autocomplete="new-password"></div>'+
+        '</div>')
+      : ('<div class="fieldset"><div class="fs-title">Login</div>'+
+          '<div class="field"><label>Username</label><input id="u_username" type="text" placeholder="e.g. minhanh" autocomplete="off" autocapitalize="off" spellcheck="false"></div>'+
+          '<div class="field"><label>Password</label><input id="u_password" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div>'+
+        '</div>');
+
     document.getElementById("userBody").innerHTML =
       '<div class="fieldset"><div class="fs-title">Account</div>'+
         '<div class="field"><label>Full name</label><input id="u_name" type="text" placeholder="e.g. Minh Anh" value="'+(u?escapeHtml(u.name):'')+'" autocomplete="off"></div>'+
@@ -3607,10 +3658,10 @@
           '<div id="u_scope_checks" class="us-market-grid">'+marketChecksHtml+'</div>'+
         '</div>'+
       '</div>'+
+      loginFieldsHtml+
       '<div class="fieldset"><div class="fs-title">What this role can do</div>'+
         '<div id="u_role_summary" style="color:var(--text-muted);font-size:13px;line-height:1.5"></div>'+
-      '</div>'+
-      (u ? '<p style="margin:0;font-size:11.5px;color:var(--text-faint)">This is a demo roster — no password is set or changed here.</p>' : '');
+      '</div>';
 
     document.getElementById("u_role").addEventListener("change", refreshUserFormRoleUI);
     refreshUserFormRoleUI();
@@ -3624,6 +3675,17 @@
     document.getElementById("u_scope_global").hidden = !forced;
     document.getElementById("u_scope_checks").hidden = forced;
     document.getElementById("u_role_summary").textContent = (ROLE_INFO[role]||{}).summary || "";
+  }
+
+  async function setStaffPassword(targetStaffId, newPassword, username){
+    var res = await fetch("/api/auth/set-password", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({targetStaffId:targetStaffId, newPassword:newPassword, username:username||undefined})
+    });
+    var json = await res.json().catch(function(){ return {}; });
+    if(!res.ok){ throw new Error(json.error || "Could not set password"); }
+    return json;
   }
 
   async function submitUser(){
@@ -3642,10 +3704,13 @@
 
     var now = new Date().toISOString();
     var by = state.user ? state.user.name : "—";
+    var passwordEl = document.getElementById("u_password");
+    var newPassword = passwordEl ? passwordEl.value : "";
 
     if(editingUserId){
       var u = state.staff.find(function(x){ return x.id===editingUserId; });
       if(!u){ closeDrawers(); return; }
+      if(newPassword && newPassword.length<6){ toast("New password must be at least 6 characters"); return; }
       var oldRole = u.role;
       u.name = name; u.role = role; u.markets = markets; u.updated_at = now; u.updated_by = by;
       if(db && staffCol){
@@ -3653,24 +3718,37 @@
           await staffCol.doc(u.id).update({name:name, role:role, markets:markets, updated_at:now, updated_by:by});
         }catch(e){ console.warn("user update failed", e); toast("Could not save — please try again"); return; }
       }
+      if(newPassword){
+        try{
+          await setStaffPassword(u.id, newPassword);
+          logAction("PasswordReset", "", name);
+        }catch(e){ console.warn("password reset failed", e); toast("Saved profile, but could not set new password: "+e.message); }
+      }
       logAction("StaffUpdated", oldRole===role ? "Updated market scope" : ("Role changed "+ROLES[oldRole].label+" → "+ROLES[role].label), name);
       toast("Updated "+name);
     } else {
+      var usernameEl = document.getElementById("u_username");
+      var username = usernameEl ? usernameEl.value.trim().toLowerCase() : "";
+      if(!/^[a-z0-9_.]{3,32}$/.test(username)){ toast("Username must be 3-32 characters: lowercase letters, numbers, underscore or dot"); return; }
+      if(!newPassword || newPassword.length<6){ toast("Please set a password of at least 6 characters"); return; }
+
       var id = (name.toLowerCase().replace(/[^a-z0-9]+/g,"").slice(0,16) || "user") + "_" + uid().slice(0,4);
-      var row = {name:name, role:role, markets:markets, active:true, created_at:now, created_by:by};
+      var row = {name:name, username:username, role:role, markets:markets, active:true, created_at:now, created_by:by};
       if(db && staffCol){
+        try{
+          await setStaffPassword(id, newPassword, username);
+        }catch(e){ console.warn("set password failed", e); toast("Could not create login: "+e.message); return; }
         try{
           await staffCol.doc(id).set(row);
           if(!state.staff.some(function(x){ return x.id===id; })) state.staff.push(Object.assign({id:id}, row));
-        }catch(e){ console.warn("user add failed", e); toast("Could not add the account — please try again"); return; }
+        }catch(e){ console.warn("user add failed", e); toast("Login was created, but the profile could not be saved — please try again"); return; }
       } else {
         state.staff.push(Object.assign({id:id}, row));
       }
       logAction("StaffAdded", ROLES[role].label+" · "+(markets==="ALL"?"All markets":markets.join(", ")), name);
-      toast('Added "'+name+'" as '+ROLES[role].label+" — now on the sign-in screen");
+      toast('Added "'+name+'" as '+ROLES[role].label);
     }
     closeDrawers();
-    if(!state.user) renderStaffList();
     renderAll();
   }
 
@@ -3690,7 +3768,6 @@
     }
     logAction("StaffRemoved", ROLES[u.role].label, u.name);
     toast("Removed "+u.name);
-    if(!state.user) renderStaffList();
     renderAll();
   }
 
@@ -3779,8 +3856,8 @@
     });
 
     wireResetButton();
-    tryAutoSignIn();
-    initDb();
+    wireLoginForm();
+    checkSession();
   }
 
   var _origRenderAll = renderAll;
