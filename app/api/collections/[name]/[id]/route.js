@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { setDoc, updateDoc, deleteDoc } from "../../../../../lib/db";
 import { getSessionFromRequest } from "../../../../../lib/auth";
 
-const ALLOWED = new Set(["orders", "inventory", "logs", "announcements", "messages", "staff"]);
+const ALLOWED = new Set(["orders", "inventory", "logs", "announcements", "messages", "staff", "channels"]);
 
 function checkName(name) {
   return ALLOWED.has(name);

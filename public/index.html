@@ -636,6 +636,7 @@
     <button role="tab" data-tab="announcements" aria-selected="false">Announcements</button>
     <button role="tab" data-tab="mailbox" aria-selected="false">Mailbox<span class="mail-badge" id="mailTabBadge" hidden></span></button>
     <button role="tab" data-tab="auditlog" aria-selected="false">Audit Log</button>
+    <button role="tab" data-tab="channels" aria-selected="false">Sales Channels</button>
     <button role="tab" data-tab="users" aria-selected="false">Users &amp; Roles</button>
   </div>
 
@@ -714,6 +715,9 @@
 
   <!-- ===== AUDIT LOG TAB ===== -->
   <div class="tabpanel" id="panel-auditlog" hidden></div>
+
+  <!-- ===== SALES CHANNELS TAB (Admin only) ===== -->
+  <div class="tabpanel" id="panel-channels" hidden></div>
 
   <!-- ===== USERS & ROLES TAB (Admin only) ===== -->
   <div class="tabpanel" id="panel-users" hidden></div>
@@ -871,6 +875,9 @@
     Error:         []
   };
 
+  // Fallback / initial-seed list only — the live, editable list lives in
+  // state.channels (synced through the `channels` db collection; see
+  // seedChannelsFallback() and the Sales Channels admin tab).
   var CHANNELS = ["TikTok_HP","Outlet 5","Outlet 8","Outlet 12","Outlet 14","TaiwanBook","Happy Shop","Line"];
   var ORDER_TYPES = ["Ads","Live","Organic"];
   var PICS = ["Sherence","Ciara","Shane","Eloisa","Ivy","Rhea","QT"];
@@ -936,7 +943,7 @@
     return STAFF_SEED.map(function(u){ return Object.assign({}, u); });
   }
   var TAB_ACCESS = {
-    Admin:   ["dashboard","orders","inventory","fulfillment","returns","streamers","announcements","mailbox","auditlog","users"],
+    Admin:   ["dashboard","orders","inventory","fulfillment","returns","streamers","announcements","mailbox","auditlog","channels","users"],
     Manager: ["dashboard","orders","inventory","fulfillment","returns","streamers","announcements","mailbox","auditlog"],
     CS:      ["orders","inventory","returns","streamers","announcements","mailbox"],
     Packing: ["orders","inventory","fulfillment","returns","announcements","mailbox"]
@@ -962,6 +969,7 @@
     staff: seedStaffFallback(),
     orders: [],
     inventory: [],
+    channels: [],
     announcements: [],
     messages: [],
     logs: [],
@@ -1130,6 +1138,9 @@
       {id:"msg2", sender_id:"shane", sender_name:"Shane", recipients:["sherence","ivy","rhea"], subject:"Packing delay — T-Cat pickup moved", body:"T-Cat's pickup window moved to 4pm today. Orders packed after 3:30pm will ship tomorrow instead.", created_at:new Date(now-2*3600000).toISOString(), read_by:["shane"]}
     ];
   }
+  function seedChannelsFallback(){
+    return CHANNELS.map(function(name, i){ return {id:"ch"+(i+1), name:name}; });
+  }
 
   function computeTotal(o){
     return o.items.reduce(function(s,it){ return s+it.qty*it.price; },0) + (o.shipping_fee||0);
@@ -1162,11 +1173,12 @@
     if(state.activeTab==="announcements") renderAnnouncements();
     if(state.activeTab==="mailbox") renderMailbox();
     if(state.activeTab==="auditlog") renderAuditLog();
+    if(state.activeTab==="channels") renderChannels();
     if(state.activeTab==="users") renderUsers();
     renderMailBadge();
   }
 
-  var db = null, ordersCol = null, inventoryCol = null, logsCol = null, announcementsCol = null, messagesCol = null, staffCol = null;
+  var db = null, ordersCol = null, inventoryCol = null, logsCol = null, announcementsCol = null, messagesCol = null, staffCol = null, channelsCol = null;
 
   function logAction(type, note, orderCode){
     var entry = {type:type, note:note||"", order_code:orderCode||"", by:state.user?state.user.name:"—", at:new Date().toISOString()};
@@ -1192,6 +1204,7 @@
       announcementsCol = db.collection("announcements");
       messagesCol = db.collection("messages");
       staffCol = db.collection("staff");
+      channelsCol = db.collection("channels");
 
       dbUnsubscribers.push(staffCol.onSnapshot(function(snap){
         // Seeding (both the staff profiles and their real login credentials)
@@ -1260,10 +1273,20 @@
         console.warn("messages snapshot error", err);
         if(!state.messages.length){ state.messages = seedMessagesFallback(); renderAll(); }
       }));
+      dbUnsubscribers.push(channelsCol.onSnapshot(function(snap){
+        state.channels = snap.docs.map(function(d){ var v=d.data(); v.id=d.id; return v; })
+          .sort(function(a,b){ return a.name.localeCompare(b.name); });
+        if(!state.channels.length && !state._chSeeded){ state._chSeeded=true; seedChannelsFallback().forEach(function(c){ channelsCol.doc(c.id).set(c).catch(function(){}); }); }
+        renderAll();
+      }, function(err){
+        console.warn("channels snapshot error", err);
+        if(!state.channels.length){ state.channels = seedChannelsFallback(); renderAll(); }
+      }));
     } else {
       state.staff = seedStaffFallback();
       state.orders = seedOrdersFallback();
       state.inventory = seedInventoryFallback();
+      state.channels = seedChannelsFallback();
       state.announcements = seedAnnouncementsFallback();
       state.messages = seedMessagesFallback();
       state.dbReady = false;
@@ -1294,6 +1317,7 @@
         await wipeCollection(logsCol);
         await wipeCollection(announcementsCol);
         await wipeCollection(messagesCol);
+        await wipeCollection(channelsCol);
         state._staffSeeding = true; // guard: prevent a false "account removed" signout
                                      // for the admin running this reset while staff is wiped
         await wipeCollection(staffCol);
@@ -1331,11 +1355,18 @@
           var mid = msg.id; delete msg.id;
           await messagesCol.doc(mid).set(msg);
         }
+        var freshCh = seedChannelsFallback();
+        for(var chI=0;chI<freshCh.length;chI++){
+          var ch = freshCh[chI];
+          var chid = ch.id; delete ch.id;
+          await channelsCol.doc(chid).set(ch);
+        }
         // snapshots refresh state.* automatically via onSnapshot
       } else {
         state.staff = seedStaffFallback();
         state.orders = seedOrdersFallback();
         state.inventory = seedInventoryFallback();
+        state.channels = seedChannelsFallback();
         state.announcements = seedAnnouncementsFallback();
         state.messages = seedMessagesFallback();
         state.logs = [];
@@ -1492,7 +1523,7 @@
   /* ============================================================
      TAB SWITCHING
   ============================================================ */
-  var ALL_TABS = ["dashboard","orders","inventory","fulfillment","returns","streamers","announcements","mailbox","auditlog","users"];
+  var ALL_TABS = ["dashboard","orders","inventory","fulfillment","returns","streamers","announcements","mailbox","auditlog","channels","users"];
 
   function switchTab(tab){
     if(myTabs().indexOf(tab)<0) tab = "orders";
@@ -2138,7 +2169,8 @@
 
     var marketOpts = MARKETS.filter(function(m){ return mine.indexOf(m.key)>=0; })
       .map(function(m){ return '<option value="'+m.key+'"'+(m.key===market?" selected":"")+'>'+m.code+' — '+m.name+'</option>'; }).join("");
-    var channelOpts = CHANNELS.map(function(c){ return '<option value="'+c+'">'+c+'</option>'; }).join("");
+    var channelSource = state.channels.length ? state.channels.map(function(c){ return c.name; }) : CHANNELS;
+    var channelOpts = channelSource.map(function(c){ return '<option value="'+c+'">'+c+'</option>'; }).join("");
     var typeOpts = ORDER_TYPES.map(function(t){ return '<option value="'+t+'"'+(t===type?" selected":"")+'>'+t+'</option>'; }).join("");
     var picOpts = PICS.map(function(p){ return '<option value="'+p+'"'+(state.user&&p===state.user.name?" selected":"")+'>'+p+'</option>'; }).join("");
     var carrierElPre = document.getElementById("f_carrier");
@@ -3558,6 +3590,98 @@
      fixed in code; this page assigns one of them, plus a market
      scope, to a staff account.
   ============================================================ */
+  /* ============================================================
+     SALES CHANNELS (Admin only) — editable lookup list feeding the
+     "Sales channel" field on New order. A channel name is copied onto
+     each order as a plain string at creation time, so removing a
+     channel later never changes past orders — it only narrows the
+     choices offered for new ones.
+  ============================================================ */
+  function renderChannels(){
+    var counts = {};
+    state.orders.forEach(function(o){ counts[o.channel] = (counts[o.channel]||0)+1; });
+
+    var rows = state.channels.slice().sort(function(a,b){ return a.name.localeCompare(b.name); });
+    var rowsHtml = rows.map(function(c){
+      var n = counts[c.name]||0;
+      return '<tr>'+
+        '<td class="cell-cust"><div class="name">'+escapeHtml(c.name)+'</div></td>'+
+        '<td class="num">'+n+'</td>'+
+        '<td class="pick-row-actions">'+
+          '<button type="button" class="btn btn-sm btn-outline-critical" data-remove-channel="'+c.id+'">Remove</button>'+
+        '</td>'+
+      '</tr>';
+    }).join("");
+
+    var panel = document.getElementById("panel-channels");
+    panel.innerHTML =
+      '<div class="toolbar">'+
+        '<div class="field" style="flex:0 1 320px;margin:0"><input id="newChannelInput" type="text" placeholder="New channel name, e.g. Shopee Mall" autocomplete="off"></div>'+
+        '<div style="flex:1 1 auto"></div>'+
+        '<button type="button" class="btn btn-primary btn-sm" id="btnAddChannel">+ Add channel</button>'+
+      '</div>'+
+      '<div class="panel">'+
+        '<div class="panel-head"><h3>Sales channels</h3><span class="sub">'+rows.length+' channel(s) · shown in the "Sales channel" list when creating an order</span></div>'+
+        '<div class="table-scroll"><table><thead><tr><th>Channel</th><th>Orders on this channel</th><th></th></tr></thead>'+
+        '<tbody>'+(rowsHtml||'')+'</tbody></table></div>'+
+        (rows.length?'':'<div class="empty-state"><div>No sales channels yet — add one above.</div></div>')+
+      '</div>';
+
+    var addBtn = document.getElementById("btnAddChannel");
+    var input = document.getElementById("newChannelInput");
+    if(addBtn) addBtn.addEventListener("click", function(){ addChannel(input.value); });
+    if(input) input.addEventListener("keydown", function(e){ if(e.key==="Enter"){ e.preventDefault(); addChannel(input.value); } });
+
+    panel.querySelectorAll("[data-remove-channel]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if(btn.dataset.armed==="1"){
+          clearTimeout(btn._armTimer);
+          removeChannel(btn.getAttribute("data-remove-channel"));
+        } else {
+          btn.dataset.armed = "1";
+          btn.textContent = "Confirm remove?";
+          btn._armTimer = setTimeout(function(){ btn.dataset.armed=""; btn.textContent="Remove"; }, 3000);
+        }
+      });
+    });
+  }
+
+  async function addChannel(rawName){
+    var name = (rawName||"").trim();
+    if(!name){ toast("Please enter a channel name"); return; }
+    var dupe = state.channels.some(function(c){ return c.name.toLowerCase()===name.toLowerCase(); });
+    if(dupe){ toast('"'+name+'" already exists'); return; }
+
+    var by = state.user ? state.user.name : "—";
+    var row = {name:name, created_at:new Date().toISOString(), created_by:by};
+    if(db && channelsCol){
+      try{
+        var ref = await channelsCol.add(row);
+        if(!state.channels.some(function(c){ return c.id===ref.id; })) state.channels.push(Object.assign({id:ref.id}, row));
+      }catch(e){ console.warn("channel add failed", e); toast("Could not add channel — please try again"); return; }
+    } else {
+      row.id = uid();
+      state.channels.push(row);
+    }
+    logAction("ChannelAdded", "", name);
+    toast('Added channel "'+name+'"');
+    var input = document.getElementById("newChannelInput");
+    if(input) input.value = "";
+    renderAll();
+  }
+
+  async function removeChannel(id){
+    var c = state.channels.find(function(x){ return x.id===id; });
+    if(!c) return;
+    if(db && channelsCol){
+      try{ await channelsCol.doc(id).delete(); }catch(e){ console.warn("channel remove failed", e); toast("Could not remove — please try again"); return; }
+    }
+    state.channels = state.channels.filter(function(x){ return x.id!==id; });
+    logAction("ChannelRemoved", "", c.name);
+    toast('Removed channel "'+c.name+'"');
+    renderAll();
+  }
+
   function renderUsers(){
     var rows = state.staff.slice().sort(function(a,b){
       var order = {Admin:0, Manager:1, CS:2, Packing:3};

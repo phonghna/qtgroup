@@ -8,7 +8,7 @@ import { getSessionFromRequest } from "../../../../lib/auth";
 // live in a separate "credentials" collection that is deliberately NOT in
 // this list, so it's never reachable through this generic route — only
 // the /api/auth/* handlers touch it, via lib/db.js directly.
-const ALLOWED = new Set(["orders", "inventory", "logs", "announcements", "messages", "staff"]);
+const ALLOWED = new Set(["orders", "inventory", "logs", "announcements", "messages", "staff", "channels"]);
 
 function checkName(name) {
   return ALLOWED.has(name);
